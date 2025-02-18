@@ -1,0 +1,115 @@
+;
+; Lab_3.asm
+;
+; Created: 18/02/2025 12:43:05
+; Author : ianfa
+;
+
+.INCLUDE "M328PDEF.INC"
+
+.DSEG
+CONTADOR:   .BYTE 1      ; Almacena el valor del contador
+BANDERA_INC: .BYTE 1     ; Bandera para incremento
+BANDERA_DEC: .BYTE 1     ; Bandera para decremento
+
+.CSEG
+.ORG 0x0000
+    JMP CONFIGURACION
+.ORG 0x0008              ; Dirección de PCINT1_vect (Pin Change Interrupt 1)
+    JMP PCINT1_ISR
+
+CONFIGURACION:
+    ; Configurar pila
+    LDI R16, HIGH(RAMEND)
+    OUT SPH, R16
+    LDI R16, LOW(RAMEND)
+    OUT SPL, R16
+
+    ; LEDs como salida (PB0-PB3)
+    LDI R16, 0x0F
+    OUT DDRB, R16
+
+    ; Configurar A0 y A1 (PC0 y PC1) con pull-up
+    LDI R16, (1<<PC0)|(1<<PC1)
+    OUT PORTC, R16        ; Pull-ups internos
+    LDI R16, 0x00
+    OUT DDRC, R16         ; Pines como entrada
+
+    ; Configurar interrupciones por cambio en PC0 y PC1
+    LDI R16, (1<<PCIE1)
+    STS PCICR, R16        ; Habilitar PCINT1
+    LDI R16, (1<<PCINT8)|(1<<PCINT9)  ; PC0=PCINT8, PC1=PCINT9
+    STS PCMSK1, R16
+
+    ; Inicializar variables
+    CLR R16
+    STS CONTADOR, R16
+    STS BANDERA_INC, R16
+    STS BANDERA_DEC, R16
+
+    ; Habilitar interrupciones globales
+    SEI
+
+BUCLE_PRINCIPAL:
+    ; Verificar banderas
+    LDS R16, BANDERA_INC
+    SBRS R16, 0
+    RJMP CHECK_DEC
+    RCALL INCREMENTAR
+
+CHECK_DEC:
+    LDS R16, BANDERA_DEC
+    SBRS R16, 0
+    RJMP FIN_BUCLE
+    RCALL DECREMENTAR
+
+FIN_BUCLE:
+    RJMP BUCLE_PRINCIPAL
+
+INCREMENTAR:
+    PUSH R17
+    LDS R17, CONTADOR
+    INC R17
+    ANDI R17, 0x0F        ; Mantener 4 bits
+    STS CONTADOR, R17
+    OUT PORTB, R17        ; Actualizar LEDs
+    CLR R16
+    STS BANDERA_INC, R16  ; Resetear bandera
+    POP R17
+    RET
+
+DECREMENTAR:
+    PUSH R17
+    LDS R17, CONTADOR
+    DEC R17
+    ANDI R17, 0x0F        ; Mantener 4 bits
+    STS CONTADOR, R17
+    OUT PORTB, R17        ; Actualizar LEDs
+    CLR R16
+    STS BANDERA_DEC, R16  ; Resetear bandera
+    POP R17
+    RET
+
+PCINT1_ISR:
+    PUSH R16
+    IN R16, SREG
+    PUSH R16
+
+    ; Detectar si el botón de incremento está presionado (A0/PC0)
+    SBIC PINC, PC0        ; Salta si PC0 está en 1 (botón NO presionado)
+    RJMP CHECK_DEC_ISR
+    LDI R16, 1
+    STS BANDERA_INC, R16  ; Activar bandera de incremento
+
+CHECK_DEC_ISR:
+    ; Detectar si el botón de decremento está presionado (A1/PC1)
+    SBIC PINC, PC1        ; Salta si PC1 está en 1 (botón NO presionado)
+    RJMP FIN_ISR
+    LDI R16, 1
+    STS BANDERA_DEC, R16  ; Activar bandera de decremento
+
+FIN_ISR:
+    POP R16
+    OUT SREG, R16
+    POP R16
+    RETI
