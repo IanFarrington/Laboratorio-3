@@ -1,0 +1,193 @@
+;
+; Lab_3.asm
+;
+; Created: 18/02/2025 12:43:05
+; Author : ianfa
+;
+
+.INCLUDE "M328PDEF.INC"
+
+.DEF ZERO = R1               ; Registro cero definido
+
+.ORG 0x0000
+    RJMP main
+.ORG PCI1addr
+    RJMP button_isr
+.ORG OC0Aaddr
+    RJMP timer_isr
+
+.DEF units			= R20    ; Unidades del contador
+.DEF tens			= R17    ; Decenas del contador6
+.DEF tmr_counter	= R18    ; Contador de temporizador
+.DEF display_flag	= R19    ; Flag para alternar displays
+.DEF bin_count		= R21    ; Contador binario para LEDs
+.DEF temp			= R16    ; Registro temporal
+.DEF last_state		= R22    ; Estado anterior de botones
+
+.CSEG
+.ORG 0x100
+SEGMENT_TABLE:               ; Tabla de segmentos (ánodo común)
+    .DB 0xC0, 0xF9, 0xA4, 0xB0, 0x99, 0x92, 0x82, 0xF8, 0x80, 0x90
+
+main:
+    ; Inicializar pila
+    LDI temp, LOW(RAMEND)
+    OUT SPL, temp
+    LDI temp, HIGH(RAMEND)
+    OUT SPH, temp
+
+    ; Inicializar registro cero
+    CLR ZERO
+
+    ; Configurar puertos
+    LDI temp, 0xFF
+    OUT DDRD, temp           ; PORTD como salida para displays
+    CLR temp
+    OUT PORTD, temp
+
+    LDI temp, 0x0F
+    OUT DDRB, temp           ; PB0-PB3 como salidas para LEDs
+    CLR temp
+    OUT PORTB, temp
+
+    LDI temp, (1 << PC2) | (1 << PC3)
+    OUT DDRC, temp           ; PC2 y PC3 como salidas
+    CBI PORTC, PC2           ; Apagar displays inicialmente
+    CBI PORTC, PC3
+
+    CBI DDRC, PC0            ; PC0 y PC1 como entradas
+    CBI DDRC, PC1
+    SBI PORTC, PC0           ; Activar pull-ups
+    SBI PORTC, PC1
+
+    ; Inicializar variables
+    CLR units
+    CLR tens
+    CLR tmr_counter
+    CLR display_flag
+    CLR bin_count
+    CLR last_state
+
+    ; Configurar interrupciones
+    LDI temp, (1 << PCIE1)
+    STS PCICR, temp
+    LDI temp, (1 << PCINT8) | (1 << PCINT9)
+    STS PCMSK1, temp
+
+    ; Configurar Timer0 (10ms con prescaler 1024)
+    LDI temp, (1 << WGM01)
+    OUT TCCR0A, temp
+    LDI temp, (1 << CS02) | (1 << CS00)
+    OUT TCCR0B, temp
+    LDI temp, 77             ; OCR0A para 10ms @ 16MHz
+    OUT OCR0A, temp
+    LDI temp, (1 << OCIE0A)
+    STS TIMSK0, temp
+
+    SEI                      ; Habilitar interrupciones
+
+main_loop:
+    MOV temp, bin_count      ; Actualizar LEDs
+    ANDI temp, 0x0F
+    OUT PORTB, temp
+    RJMP main_loop
+
+button_isr:
+    PUSH temp
+    IN temp, SREG
+    PUSH temp
+    PUSH r24
+    PUSH r25
+    PUSH r0
+
+    ; Retardo antirrebote de 20ms (16MHz)
+    LDI r24, LOW(80000/4)    ; 80,000 ciclos = 20ms
+    LDI r25, HIGH(80000/4)
+debounce_loop:
+    SBIW r25:r24, 1
+    BRNE debounce_loop
+
+    IN temp, PINC            ; Leer estado actual
+    ANDI temp, (1 << PC0)|(1 << PC1)
+    CP temp, last_state      ; Comparar con estado anterior
+    BREQ exit_button_isr
+
+    MOV last_state, temp     ; Actualizar último estado
+
+check_inc:
+    SBIC PINC, PC0           ; Botón incremento
+    RJMP check_dec
+    INC bin_count
+    ANDI bin_count, 0x0F     ; Limitar a 4 bits
+
+check_dec:
+    SBIC PINC, PC1           ; Botón decremento
+    RJMP exit_button_isr
+    DEC bin_count
+    ANDI bin_count, 0x0F     ; Limitar a 4 bits
+
+exit_button_isr:
+    POP r0
+    POP r25
+    POP r24
+    POP temp
+    OUT SREG, temp
+    POP temp
+    RETI
+
+timer_isr:
+    PUSH temp
+    IN temp, SREG
+    PUSH temp
+    PUSH ZL
+    PUSH ZH
+
+    INC tmr_counter          ; Actualizar contador de tiempo
+    CPI tmr_counter, 100     ; 100 * 10ms = 1s
+    BRNE update_display
+
+    CLR tmr_counter
+    INC units
+    CPI units, 10
+    BRLO update_display
+    CLR units
+    INC tens
+    CPI tens, 6
+    BRLO update_display
+    CLR tens
+
+update_display:
+    SBRS display_flag, 0     ; Alternar displays
+    RJMP show_tens
+
+show_units:
+    MOV temp, units
+    RCALL display_write
+    CBI PORTC, PC3
+    SBI PORTC, PC2
+    CBR display_flag, (1 << 0)
+    RJMP end_timer_isr
+
+show_tens:
+    MOV temp, tens
+    RCALL display_write
+    CBI PORTC, PC2
+    SBI PORTC, PC3
+    SBR display_flag, (1 << 0)
+
+end_timer_isr:
+    POP ZH
+    POP ZL
+    POP temp
+    OUT SREG, temp
+    POP temp
+    RETI
+
+display_write:
+    LDI ZL, LOW(SEGMENT_TABLE << 1)
+    LDI ZH, HIGH(SEGMENT_TABLE << 1)
+    ADD ZL, temp
+    ADC ZH, ZERO             ; Usar registro cero definido
+    LPM temp, Z
+    OUT PORTD, temp
+    RET
